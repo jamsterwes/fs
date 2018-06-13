@@ -6,6 +6,23 @@
 
 #define STREAM_BUFFER_SIZE 2097152
 
+void print_progress(double percent) {
+    int width = 60;
+    printf("[");
+    int pos = width * percent;
+    for (int i = 0; i < width; i++) {
+        if (i < pos) printf("=");
+        else if (i == pos) printf(">");
+        else printf(" ");
+    }
+    printf("] %.2f%%\r", percent * 100.0);
+    fflush(stdout);
+}
+
+void finish_progress() {
+    printf("\n");
+}
+
 void list(int argc, char** argv) {
     // Allocate location amount and volume header storage
     fs_size loc_amount;
@@ -49,31 +66,26 @@ void list(int argc, char** argv) {
 }
 
 void extract(int argc, char** argv) {
-    // Store extraction path
+    // Allocate volume header storage
+    volume_header* vhead = new_header(volume);
+    // Allocate extraction path storage
     char* extraction_path;
 
-    // Allocate location amount and volume header storage
-    fs_size loc_amount;
-    volume_header* vhead = new_header(volume);
+    // Open archive file
+    FILE* afp;
+    fopen_s(&afp, argv[2], "rb");
 
-    // Open file
-    FILE* fp;
-    fopen_s(&fp, argv[2], "rb+");
+    // Read volume header from archive
+    fread_s((void*)vhead, sizeof(volume_header), sizeof(volume_header), 1, afp);
 
-    // Read volume header from file
-    fread_s((void*)vhead, sizeof(volume_header), sizeof(volume_header), 1, fp);
-
-    // Read amount of locations from volume header
-    loc_amount = vhead->location_header_count;
-
-    // Init pointer to store current location header in loop
-    location_header *lh = new_header(location);
+    // Create temporary location header
+    location_header* lh = new_header(location);
     init_header(location, lh);
 
     // Loop through each (location header + file data) pair
-    for (fs_pointer i = 1; i <= loc_amount; i++) {
+    for (fs_pointer i = 1; i <= vhead->location_header_count; i++) {
         // Read location header (minus data) from current position
-        fread_s((void*)lh, sizeof(location_header_sizer), sizeof(location_header_sizer), 1, fp);
+        fread_s((void*)lh, sizeof(location_header_sizer), sizeof(location_header_sizer), 1, afp);
 
         // If this is the correct location & this is a file
         if (lh->this_id == strtoull(argv[3], NULL, 10) && lh->is_file == FS_TRUE) {
@@ -87,35 +99,51 @@ void extract(int argc, char** argv) {
             }
 
             // Open the output file
-            FILE* out_fp;
-            fopen_s(&out_fp, extraction_path, "wb+");
+            FILE* tfp;
+            fopen_s(&tfp, extraction_path, "wb");
 
-            // Read data from file
-            char* file_data = (char*)malloc(lh->data_size);
-            fread_s((void*)file_data, lh->data_size, lh->data_size, 1, fp);
+            // Create new progress bar
+            print_progress(0.0);
 
-            // Write the file data to the output file
-            fwrite((void*)file_data, lh->data_size, 1, out_fp);
+            // Stream contents of archive file at index into target file
+            size_t last_read;
+            size_t total_written = 0;
+            fs_size amt_left = lh->data_size;
+            void* buffer = malloc(STREAM_BUFFER_SIZE);
+            do {
+                if (amt_left < STREAM_BUFFER_SIZE) {
+                    last_read = fread_s(buffer, STREAM_BUFFER_SIZE, 1, amt_left, afp);
+                } else {
+                    last_read = fread_s(buffer, STREAM_BUFFER_SIZE, 1, STREAM_BUFFER_SIZE, afp);
+                }
+                total_written += last_read;
+                amt_left -= last_read;
+                if (last_read > 0) {
+                    fwrite(buffer, last_read, 1, tfp);
+                }
+                print_progress((double)total_written / (double)lh->data_size);
+            } while (last_read == STREAM_BUFFER_SIZE);
+            finish_progress();
 
-            // Close the output file
-            fclose(out_fp);
+            // Free streaming buffer
+            free(buffer);
 
-            // Free file data buffer
-            free(file_data);
+            // Close target file
+            fclose(tfp);
 
             // End file searching
             break;
         }
-
         // Skip past file data
-        fseek(fp, lh->data_size, SEEK_CUR);
+        fseek(afp, lh->data_size, SEEK_CUR);
     }
 
-    // Close file
-    fclose(fp);
+    // Close archive file
+    fclose(afp);
 
     // Free temporary location header pointer
     free(lh);
+
     // Free temporary volume header pointer
     free(vhead);
 }
@@ -142,23 +170,6 @@ void create(int argc, char** argv) {
 
     // Log action
     printf("Wrote new volume '%s' to %s\n", argv[3], argv[2]);
-}
-
-void print_progress(double percent) {
-    int width = 60;
-    printf("[");
-    int pos = width * percent;
-    for (int i = 0; i < width; i++) {
-        if (i < pos) printf("=");
-        else if (i == pos) printf(">");
-        else printf(" ");
-    }
-    printf("] %.2f%%\r", percent * 100.0);
-    fflush(stdout);
-}
-
-void finish_progress() {
-    printf("\n");
 }
 
 void insert(int argc, char** argv) {
@@ -220,6 +231,9 @@ void insert(int argc, char** argv) {
 
     // Close archive file
     fclose(afp);
+
+    // Free the buffer
+    free(buffer);
 
     // Free temporary location header pointer
     free(lh);
