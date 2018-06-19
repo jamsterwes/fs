@@ -244,13 +244,67 @@ void insert(int argc, char** argv) {
     printf("Inserted file %s into archive %s\n", argv[3], argv[2]);
 }
 
+void delete(int argc, char** argv) {
+    // Allocate volume header storage
+    volume_header* vhead = new_header(volume);
+
+    // Open archive file
+    FILE* afp;
+    fopen_s(&afp, argv[2], "rb");
+
+    // Open temp file
+    FILE* tfp;
+    char* temp_filename = (char*)calloc(strlen(argv[2]) + 5, sizeof(char));
+    strcat_s(temp_filename, strlen(argv[2]) + 5, argv[2]);
+    strcat_s(temp_filename, strlen(argv[2]) + 5, ".tmp");
+    fopen_s(&tfp, temp_filename, "wb");
+
+    // Read volume header from archive
+    fread_s((void*)vhead, sizeof(volume_header), sizeof(volume_header), 1, afp);
+
+    // Decrement total file count
+    vhead->location_header_count--;
+    // Write volume header to temp file
+    fwrite((void*)vhead, sizeof(volume_header), 1, tfp);
+
+    // Create temporary location header
+    location_header* lh = new_header(location);
+    init_header(location, lh);
+
+    // Loop through each header/data pair
+    for (fs_pointer i = 1; i <= vhead->location_header_count; i++) {
+        // Read current location header (minus memory-only data pointer)
+        fread_s((void*)lh, sizeof(location_header_sizer), sizeof(location_header_sizer), 1, afp);
+
+        // If this is the correct location and a file
+        if (lh->this_id == strtoull(argv[3], NULL, 10) && lh->is_file == FS_TRUE) {
+            // SKIP THIS PORTION OF THE FILE
+            fseek(afp, lh->data_size, SEEK_CUR);
+        } else {
+            // Write this pair to the temp file
+            fwrite((void*)lh, sizeof(location_header_sizer), 1, tfp);
+            void* buffer = malloc(lh->data_size);
+            fread_s((void*)buffer, lh->data_size, lh->data_size, 1, afp);
+            fwrite((void*)buffer, lh->data_size, 1, tfp);
+        }
+    }
+
+    // Delete original file
+    fclose(afp);
+    remove(argv[2]);
+
+    // Rename temp file to original file
+    fclose(tfp);
+    rename(temp_filename, argv[2]);
+}
+
 #define ACTION(flag, alias, argcount) (strcmp(argv[1], flag) == 0 || strcmp(argv[1], alias) == 0) && argc >= (argcount + 2)
 
 #define bin_name "fs"
-#define usage "Usage:\n%s list <archive>\n%s extract <archive> <index>  [output name]\n%s create <archive> <volume name>\n%s insert <archive> <target file>"
+#define usage "Usage:\n%s list <archive>\n%s extract <archive> <index>  [output name]\n%s create <archive> <volume name>\n%s insert <archive> <target file>\n%s delete <archive> <index>"
 
 void print_usage() {
-    printf(usage, bin_name, bin_name, bin_name, bin_name);
+    printf(usage, bin_name, bin_name, bin_name, bin_name, bin_name);
 }
 
 int main(int argc, char** argv) {
@@ -266,6 +320,9 @@ int main(int argc, char** argv) {
         } else if (ACTION("insert", "i", 2)) {
             printf("Inserting file %s into archive %s\n", argv[3], argv[2]);
             insert(argc, argv);
+        } else if (ACTION("delete", "rm", 2)) {
+            printf("Removing file %llu from archive %s\n", strtoull(argv[3], NULL, 10), argv[2]);
+            delete(argc, argv);
         } else {
             print_usage();
         }
